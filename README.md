@@ -405,10 +405,11 @@ Webhook example:
 
 ---
 **Alternate AWS SES incase gmail does not work**
-Detailed Step-by-Step: Configure AWS SES for Jenkins (ap-south-1)
-==================================================================
 
-This guide walks you through installing AWS CLI, verifying SES identities, generating SMTP credentials, configuring Jenkins to use Amazon SES (ap-south-1), testing, and troubleshooting.
+Detailed Step-by-Step: Configure AWS SES for Jenkins (ap-south-1)
+
+This guide walks you through installing AWS CLI, verifying SES identities, generating SMTP credentials, 
+configuring Jenkins to use Amazon SES (ap-south-1), testing, and troubleshooting.
 
 Prerequisites
 -------------
