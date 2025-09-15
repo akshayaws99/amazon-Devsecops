@@ -1,0 +1,205 @@
+Detailed Step-by-Step: Configure AWS SES for Jenkins (ap-south-1)
+==================================================================
+
+This guide walks you through installing AWS CLI, verifying SES identities, generating SMTP credentials, configuring Jenkins to use Amazon SES (ap-south-1), testing, and troubleshooting.
+
+Prerequisites
+-------------
+- AWS account with console access and permissions to use SES and IAM.
+- Jenkins admin access.
+- An EC2 instance (or server) where Jenkins runs and you can run commands (you already have this).
+- Optional: Domain you control if you prefer sending from a custom domain.
+
+1) Install AWS CLI v2 (on Ubuntu)
+---------------------------------
+Run on your Jenkins/EC2 host:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y unzip curl
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+sudo ./aws/install
+aws --version
+```
+
+You should see something like: `aws-cli/2.x.x ...`
+
+2) Configure AWS CLI
+--------------------
+Run:
+
+```bash
+aws configure
+```
+
+Enter:
+- AWS Access Key ID (from an IAM user with SES permissions)
+- AWS Secret Access Key
+- Default region name: `ap-south-1`
+- Default output format: `json`
+
+3) Verify your sender email in SES
+----------------------------------
+SES requires a verified sender (email or domain).
+
+Using AWS CLI:
+```bash
+aws ses verify-email-identity   --email-address akshayaws99@gmail.com   --region ap-south-1
+```
+
+Then check verification status:
+```bash
+aws ses get-identity-verification-attributes   --identities akshayaws99@gmail.com   --region ap-south-1
+```
+
+Open your Gmail inbox and click the verification link that AWS sends. Wait until SES shows status `Success` / `Verified`.
+
+4) Create SES SMTP Credentials (Recommended: Console)
+----------------------------------------------------
+**Recommended**: use the AWS Console (simpler, less error-prone).
+
+- Console: AWS Console → **SES** → choose **ap-south-1** region → **SMTP Settings** → **Create SMTP credentials**.
+- Enter a name (e.g., `jenkins-smtp-user`).
+- AWS will create an IAM user and display:
+  - **SMTP Username**
+  - **SMTP Password**
+- **Save both** securely (you won't see the password again).
+
+Alternative (CLI) method (advanced)
+-----------------------------------
+1. Create IAM user and attach minimal SES policy:
+```bash
+aws iam create-user --user-name jenkins-smtp-user
+aws iam attach-user-policy --user-name jenkins-smtp-user --policy-arn arn:aws:iam::aws:policy/AmazonSESFullAccess
+aws iam create-access-key --user-name jenkins-smtp-user
+```
+2. Convert the access keys to SMTP credentials using the AWS `credconverter.py` helper:
+```bash
+curl -o credconverter.py https://raw.githubusercontent.com/aws/aws-cli/master/awscli/customizations/ses/credconverter.py
+python3 credconverter.py --username <AccessKeyId> --password <SecretAccessKey> --region ap-south-1
+```
+This prints an SMTP username and SMTP password. (Using the Console is simpler and recommended.)
+
+5) Test network connectivity from Jenkins host
+----------------------------------------------
+Ensure your server can reach SES SMTP endpoint:
+
+```bash
+telnet email-smtp.ap-south-1.amazonaws.com 587
+# or
+nc -vz email-smtp.ap-south-1.amazonaws.com 587
+```
+
+You should see a greeting banner like: `220 email-smtp.amazonaws.com ESMTP ...`
+
+If connection fails:
+- Check EC2 instance Security Group outbound rules (allow egress to 0.0.0.0/0 or at least to SES endpoint on port 587).
+- Check VPC NACLs or corporate firewall.
+
+6) Configure Jenkins (Manage Jenkins → Configure System)
+--------------------------------------------------------
+A) **Extended E-mail Notification** (recommended for advanced templates)
+- SMTP server: `email-smtp.ap-south-1.amazonaws.com`
+- SMTP Port: `587`
+- Use SMTP Authentication: **checked**
+  - User Name: `<your-smtp-username>` (from SES)
+  - Password: `<your-smtp-password>` (from SES)
+- Use TLS: **checked**
+- Default user e-mail suffix: (optional)
+- Test by entering a test recipient and clicking **Test configuration by sending test e-mail**
+
+B) **E-mail Notification** (basic section)
+- SMTP server: `email-smtp.ap-south-1.amazonaws.com`
+- Default user e-mail suffix: (optional)
+- Use SMTP Authentication: **checked**
+  - User Name: `<your-smtp-username>`
+  - Password: `<your-smtp-password>`
+- Use TLS: **checked**
+- SMTP Port: `587`
+- System Admin e-mail address (in Jenkins Location): `akshayaws99@gmail.com` (this should be a **verified** SES identity unless you move SES out of sandbox)
+
+7) Test email send from Jenkins
+-------------------------------
+- In Jenkins Configure System, use **Test configuration by sending test e-mail** to a verified address.
+- If it succeeds: good.
+- If you see: `554 Message rejected: Email address is not verified` → verify the FROM address in SES (and the recipient if SES is in sandbox).
+
+8) SES Sandbox vs Production
+-----------------------------
+- By default SES is in **Sandbox**:
+  - You can send only to verified recipients.
+  - Sender identity must be verified.
+- To send to any external recipient, request production access:
+  - AWS Console → **Support** → **Create case** → **Service Limit Increase** → choose **SES Sending Limits/Production Access** (region: ap-south-1)
+  - Provide *use case* (example below) and estimated sending volume.
+
+Suggested use-case explanation to paste in the form:
+```
+We will use Amazon SES to send transactional CI/CD email notifications from our Jenkins server (build statuses, alerts). These notifications are not marketing emails. Typical volume will be ~<100> emails/day initially. Recipients are developers and devops team members only. We will comply with anti-spam rules and include unsubscribe links where required for user-facing emails.
+```
+
+9) Update Jenkins Pipeline (emailext) — sample snippet
+-----------------------------------------------------
+If you already have `emailext` in your Jenkinsfile, you can keep `from:` as your verified SES email. Example:
+
+```groovy
+post {
+  always {
+    script {
+      emailext (
+        subject: "Pipeline ${currentBuild.currentResult}: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+        body: "<p>Build URL: <a href='${env.BUILD_URL}'>${env.BUILD_URL}</a></p>",
+        to: 'recipient@example.com',       // recipient (in sandbox, must be verified)
+        from: 'akshayaws99@gmail.com',     // verified sender in SES
+        mimeType: 'text/html'
+      )
+    }
+  }
+}
+```
+
+10) Troubleshooting & Useful AWS CLI checks
+-------------------------------------------
+- Check SES send quota:
+```bash
+aws ses get-send-quota --region ap-south-1
+```
+- Check send statistics:
+```bash
+aws ses get-send-statistics --region ap-south-1
+```
+- List identities:
+```bash
+aws ses list-identities --region ap-south-1
+```
+- Check verification attributes:
+```bash
+aws ses get-identity-verification-attributes --identities akshayaws99@gmail.com --region ap-south-1
+```
+- Tail Jenkins logs for mail errors:
+```bash
+sudo journalctl -u jenkins -f
+# or
+tail -n 200 /var/log/jenkins/jenkins.log
+```
+- If Jenkins times out connecting to the SMTP server:
+  - Confirm telnet / nc connectivity from Jenkins host (see step 5).
+  - Confirm Jenkins server uses system network (no proxy interfering).
+  - Ensure correct SMTP username/password (copy/paste errors common).
+
+11) Optional: Send from Custom Domain (recommended for production)
+------------------------------------------------------------------
+- Verify domain in SES (Domains → Verify a Domain) and configure DKIM (recommended) and SPF records in DNS. This improves deliverability and avoids Gmail classification as spam.
+- Once domain is verified, you can use `alerts@yourdomain.com` as FROM without verifying each recipient.
+
+Summary
+-------
+- Console method to create SMTP credentials is the easiest and safest.
+- Verify the FROM email in SES; if still in sandbox, verify recipients or request production access.
+- Ensure network connectivity (telnet to SES SMTP) and Jenkins is configured to use TLS on port 587.
+- Test with Jenkins **Test configuration** and with a pipeline run.
+
+If you’d like, I can:
+- Add these steps into your repo README file and push a commit (I can generate the file content for you to copy).
+- Produce a small script to automate the IAM creation + SMTP credential conversion (advanced).
